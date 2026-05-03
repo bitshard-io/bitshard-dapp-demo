@@ -12,7 +12,7 @@ import {
     useSwitchChain
 } from 'wagmi';
 import { arbitrumSepolia } from 'wagmi/chains';
-import { parseEther, type Hex } from 'viem';
+import { parseUnits, type Hex } from 'viem';
 
 import type { BitShardProvider } from '@bitshard.io/bitshard-wagmi-connector';
 
@@ -22,6 +22,23 @@ type Props = {
 
 const DEFAULT_RECIPIENT = '0x000000000000000000000000000000000000dEaD';
 const DEFAULT_VALUE = '0.0001';
+
+/**
+ * Convert a human ETH decimal string to wei without passing through Number():
+ * tiny values (e.g. 0.0000001) become 1e-7 and downstream parsers reject
+ * scientific notation when coerced to string.
+ */
+function ethInputToWei(amount: string): bigint {
+    const t = amount.trim();
+    if (!/^\d+(\.\d+)?$/.test(t)) {
+        throw new Error('Amount must be a positive decimal (e.g. 0.0001). No scientific notation or commas.');
+    }
+    const [whole, frac = ''] = t.split('.');
+    if (whole === '0' && (frac === '' || /^0*$/.test(frac))) {
+        throw new Error('Amount must be greater than zero.');
+    }
+    return parseUnits(t, 18);
+}
 
 // chainIds known to be supported by the BitShard backend today. This is
 // purely cosmetic on the demo side — the popup is the source of truth and
@@ -270,7 +287,13 @@ function SendTransactionCard() {
     const [amount, setAmount] = useState<string>(DEFAULT_VALUE);
     const { sendTransaction, data: hash, error, isPending, reset } = useSendTransaction();
 
-    const valid = Boolean(isConnected && to && amount && Number(amount) > 0);
+    let amountError: string | null = null;
+    try {
+        if (amount.trim()) ethInputToWei(amount);
+    } catch (e) {
+        amountError = e instanceof Error ? e.message : 'Invalid amount';
+    }
+    const valid = Boolean(isConnected && to && amount && !amountError);
     const explorerBase = chainId === 42161 ? 'https://arbiscan.io'
         : chainId === 42170 ? 'https://nova.arbiscan.io'
         : 'https://sepolia.arbiscan.io';
@@ -296,15 +319,23 @@ function SendTransactionCard() {
                 <label>Amount (ETH)</label>
                 <input value={amount} onChange={(e) => setAmount(e.target.value)} />
             </div>
+            {amountError && <p className="error">{amountError}</p>}
             <div className="row">
                 <button
                     className="primary"
                     disabled={!valid || isPending}
                     onClick={() => {
                         reset();
+                        let value: bigint;
+                        try {
+                            value = ethInputToWei(amount || '0');
+                        } catch (e) {
+                            console.error(e);
+                            return;
+                        }
                         sendTransaction({
                             to: to as Hex,
-                            value: parseEther(amount || '0'),
+                            value,
                             account: address,
                             chainId
                         });
