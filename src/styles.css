@@ -97,6 +97,14 @@ body {
     font-weight: 600;
 }
 
+.card h3 {
+    font-size: 14px;
+    margin: 0;
+    letter-spacing: -0.005em;
+    color: var(--text);
+    font-weight: 600;
+}
+
 .card p {
     margin: 0;
     color: var(--text-muted);
@@ -187,7 +195,8 @@ button.ghost:hover:not(:disabled) {
 }
 
 input,
-textarea {
+textarea,
+select {
     font: inherit;
     background: var(--bg-elev);
     color: var(--text);
@@ -199,7 +208,8 @@ textarea {
 }
 
 input:focus,
-textarea:focus {
+textarea:focus,
+select:focus {
     outline: 0;
     border-color: var(--accent);
     box-shadow: 0 0 0 3px var(--accent-soft);
@@ -224,6 +234,33 @@ label {
     display: flex;
     flex-direction: column;
     gap: 6px;
+}
+
+.divider {
+    height: 1px;
+    background: var(--border);
+    margin: 4px 0;
+}
+
+.chain-select-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
+
+.chain-select-row select {
+    flex: 1;
+    min-width: 0;
+}
+
+.icon-btn {
+    width: 42px;
+    height: 42px;
+    padding: 0;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex: 0 0 auto;
 }
 
 a {

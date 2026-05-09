@@ -4,11 +4,12 @@ A minimal wagmi v2 + React dApp that demonstrates [`@bitshard.io/bitshard-wagmi-
 
 This repository is the **standalone** version of the demo that used to live under `examples/demo-dapp/` in the main BitShard monorepo. Everything here is self-contained — dependencies resolve from npm, not a sibling folder.
 
-It exposes three flows:
+It exposes four flows:
 
 1. **Connect** — opens the BitShard popup, lets you authorize the dApp, returns your MPC wallet address.
 2. **Sign message** — calls `personal_sign` through the connector.
-3. **Send transaction** — sends `0.0001 ETH` on Arbitrum Sepolia via `eth_sendTransaction`, broadcasts through the BitShard backend, and renders an Arbiscan link to the mined hash.
+3. **Sign typed data** — calls `eth_signTypedData_v4` through the connector.
+4. **Send transaction** — sends `0.0001 ETH` on Arbitrum Sepolia via `eth_sendTransaction`, broadcasts through the BitShard backend, and renders an Arbiscan link to the mined hash.
 
 ## Local development
 

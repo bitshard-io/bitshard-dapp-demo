@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
     useAccount,
     useBalance,
@@ -9,12 +9,13 @@ import {
     useDisconnect,
     useSendTransaction,
     useSignMessage,
+    useSignTypedData,
     useSwitchChain
 } from 'wagmi';
 import { arbitrumSepolia } from 'wagmi/chains';
-import { parseUnits, type Hex } from 'viem';
+import { encodeFunctionData, parseUnits, type Hex } from 'viem';
 
-import type { BitShardProvider } from '@bitshard.io/bitshard-wagmi-connector';
+import type { BitShardProvider, BitShardTokenBalance } from '@bitshard.io/bitshard-wagmi-connector';
 
 type Props = {
     appUrl: string;
@@ -22,6 +23,19 @@ type Props = {
 
 const DEFAULT_RECIPIENT = '0x000000000000000000000000000000000000dEaD';
 const DEFAULT_VALUE = '0.0001';
+type DemoWalletKind = 'mpc' | 'local';
+const ERC20_TRANSFER_ABI = [
+    {
+        type: 'function',
+        name: 'transfer',
+        stateMutability: 'nonpayable',
+        inputs: [
+            { name: 'to', type: 'address' },
+            { name: 'amount', type: 'uint256' }
+        ],
+        outputs: [{ name: '', type: 'bool' }]
+    }
+] as const;
 
 /**
  * Convert a human ETH decimal string to wei without passing through Number():
@@ -40,8 +54,13 @@ function ethInputToWei(amount: string): bigint {
     return parseUnits(t, 18);
 }
 
+function tokenDecimals(token: BitShardTokenBalance | undefined): number {
+    const parsed = Number(token?.tokenDecimal ?? 18);
+    return Number.isInteger(parsed) && parsed >= 0 && parsed <= 255 ? parsed : 18;
+}
+
 // chainIds known to be supported by the BitShard backend today. This is
-// purely cosmetic on the demo side — the popup is the source of truth and
+// purely cosmetic on the demo side - the popup is the source of truth and
 // will reject anything else with a clear message.
 const BITSHARD_SUPPORTED_IDS = new Set<number>([42161, 42170, 421614]);
 
@@ -61,6 +80,7 @@ export function App({ appUrl }: Props) {
 
             <ConnectCard />
             <SignMessageCard />
+            <SignTypedDataCard />
             <SendTransactionCard />
         </div>
     );
@@ -115,6 +135,7 @@ function ConnectCard() {
 
     const bitshardConnector = useMemo(() => connectors.find((c) => c.id === 'bitshard'), [connectors]);
     const activeConnector = connections[0]?.connector;
+    const [walletKind, setWalletKind] = useState<DemoWalletKind>();
 
     const openViewer = useCallback(async (targetChainId: number) => {
         const connector = activeConnector ?? bitshardConnector;
@@ -122,6 +143,35 @@ function ConnectCard() {
         const provider = (await connector.getProvider()) as BitShardProvider;
         provider.viewWallet(targetChainId);
     }, [activeConnector, bitshardConnector]);
+
+    useEffect(() => {
+        const connector = activeConnector ?? bitshardConnector;
+        if (!connector || connector.id !== 'bitshard') {
+            setWalletKind(undefined);
+            return;
+        }
+
+        let mounted = true;
+        let provider: BitShardProvider | null = null;
+        const syncWalletKind = (session?: { walletKind?: DemoWalletKind } | null) => {
+            if (!mounted) return;
+            setWalletKind(session?.walletKind);
+        };
+
+        connector.getProvider().then((p) => {
+            if (!mounted) return;
+            provider = p as BitShardProvider;
+            syncWalletKind(provider.getSession() as unknown as { walletKind?: DemoWalletKind } | null);
+            provider.on('bitshard:walletChanged', syncWalletKind);
+        }).catch(() => {
+            syncWalletKind(null);
+        });
+
+        return () => {
+            mounted = false;
+            if (provider) provider.removeListener('bitshard:walletChanged', syncWalletKind);
+        };
+    }, [activeConnector, bitshardConnector, address]);
 
     return (
         <div className="card">
@@ -132,60 +182,37 @@ function ConnectCard() {
                         Connected as <span className="mono">{address}</span>
                     </p>
                     <div className="row">
+                        {walletKind && <span className="badge">{walletKind === 'mpc' ? 'MPC wallet' : 'Local wallet'}</span>}
                         {balance && <span className="badge">{balance.formatted} {balance.symbol}</span>}
                         <span className="badge">chainId {chainId}</span>
                     </div>
                     <div className="field" style={{ marginTop: 4 }}>
                         <label>Switch chain</label>
-                        <div className="row" style={{ flexWrap: 'wrap' }}>
-                            {chains.map((c) => {
-                                const active = c.id === chainId;
-                                const supported = BITSHARD_SUPPORTED_IDS.has(c.id);
-                                return (
-                                    <span
-                                        key={c.id}
-                                        className="chain-pill"
-                                        style={{ display: 'inline-flex', alignItems: 'stretch' }}
-                                    >
-                                        <button
-                                            className={active ? 'primary' : 'ghost'}
-                                            disabled={isSwitching}
-                                            title={supported ? c.name : `${c.name} — not supported by BitShard yet (popup will reject)`}
-                                            onClick={() => switchChain({ chainId: c.id })}
-                                            style={{
-                                                padding: '6px 10px',
-                                                fontSize: 12,
-                                                borderTopRightRadius: supported ? 0 : undefined,
-                                                borderBottomRightRadius: supported ? 0 : undefined
-                                            }}
-                                        >
-                                            {c.name}{!supported ? ' ⚠' : ''}
-                                        </button>
-                                        {supported && (
-                                            <button
-                                                className="ghost"
-                                                disabled={!isConnected}
-                                                title={isConnected ? `View your BitShard wallet on ${c.name}` : 'Connect first to peek at your wallet'}
-                                                onClick={() => openViewer(c.id)}
-                                                style={{
-                                                    padding: '6px 8px',
-                                                    fontSize: 12,
-                                                    borderTopLeftRadius: 0,
-                                                    borderBottomLeftRadius: 0,
-                                                    borderLeft: 'none'
-                                                }}
-                                                aria-label={`Open BitShard wallet on ${c.name}`}
-                                            >
-                                                <WalletIcon />
-                                            </button>
-                                        )}
-                                    </span>
-                                );
-                            })}
+                        <div className="chain-select-row">
+                            <select
+                                value={chainId}
+                                disabled={isSwitching}
+                                onChange={(event) => switchChain({ chainId: Number(event.target.value) })}
+                                aria-label="Select Arbitrum chain"
+                            >
+                                {chains.map((c) => (
+                                    <option key={c.id} value={c.id}>
+                                        {c.name}
+                                    </option>
+                                ))}
+                            </select>
+                            <button
+                                className="ghost icon-btn"
+                                disabled={!isConnected}
+                                title="Open your BitShard wallet on the selected chain"
+                                onClick={() => openViewer(chainId)}
+                                aria-label="Open BitShard wallet"
+                            >
+                                <WalletIcon />
+                            </button>
                         </div>
                         <p className="muted" style={{ margin: '6px 0 0', fontSize: 12 }}>
-                            Click the wallet icon next to a supported chain to open your BitShard wallet on that chain.
-                            Switch chain first if you want your subsequent signs/txs to go there.
+                            Select the Arbitrum chain for subsequent signs/transactions, or open your BitShard wallet with the icon.
                         </p>
                         {switchError && <p className="error">{switchError.message}</p>}
                     </div>
@@ -193,21 +220,13 @@ function ConnectCard() {
                         <button
                             className="ghost"
                             onClick={() => disconnect()}
-                            title="Clears this dApp's wagmi session. You'll stay signed in to BitShard — reconnecting skips Keycloak."
+                            title="Clears this dApp's wagmi session."
                         >
                             Disconnect
                         </button>
-                        <button
-                            className="ghost"
-                            disabled={!isConnected}
-                            onClick={() => openViewer(chainId)}
-                            title="Opens the BitShard wallet popup where you can fully sign out of BitShard (ends the Keycloak session)."
-                        >
-                            Sign out of BitShard…
-                        </button>
                     </div>
                     <p className="muted" style={{ margin: '4px 0 0', fontSize: 11 }}>
-                        Disconnect clears this dApp's session. To fully sign out of BitShard (Keycloak), use Sign out in the wallet popup.
+                        Disconnect clears this dApp's wagmi session.
                     </p>
                 </>
             ) : (
@@ -248,7 +267,7 @@ function SignMessageCard() {
             </p>
             {!supported && isConnected && (
                 <p className="error">
-                    The currently selected chain isn't supported by BitShard. The popup will reject this request — switch back
+                    The currently selected chain isn't supported by BitShard. The popup will reject this request - switch back
                     to an Arbitrum chain to actually sign.
                 </p>
             )}
@@ -283,9 +302,23 @@ function SendTransactionCard() {
     const { isConnected, address } = useAccount();
     const chainId = useChainId();
     const supported = BITSHARD_SUPPORTED_IDS.has(chainId);
+    const connections = useConnections();
     const [to, setTo] = useState<string>(DEFAULT_RECIPIENT);
     const [amount, setAmount] = useState<string>(DEFAULT_VALUE);
+    const [tokenTo, setTokenTo] = useState<string>(DEFAULT_RECIPIENT);
+    const [tokenAmount, setTokenAmount] = useState<string>('1');
+    const [tokens, setTokens] = useState<BitShardTokenBalance[]>([]);
+    const [selectedTokenAddress, setSelectedTokenAddress] = useState<string>('');
+    const [tokenLoadError, setTokenLoadError] = useState<string | null>(null);
+    const [isLoadingTokens, setIsLoadingTokens] = useState(false);
     const { sendTransaction, data: hash, error, isPending, reset } = useSendTransaction();
+    const activeConnector = connections[0]?.connector;
+
+    useEffect(() => {
+        setTokens([]);
+        setSelectedTokenAddress('');
+        setTokenLoadError(null);
+    }, [chainId, address]);
 
     let amountError: string | null = null;
     try {
@@ -297,17 +330,43 @@ function SendTransactionCard() {
     const explorerBase = chainId === 42161 ? 'https://arbiscan.io'
         : chainId === 42170 ? 'https://nova.arbiscan.io'
         : 'https://sepolia.arbiscan.io';
+    const selectedToken = tokens.find((t) => t.contractAddress?.toLowerCase() === selectedTokenAddress.toLowerCase());
+    const selectedTokenSymbol = selectedToken?.tokenSymbol || 'token';
+    let tokenAmountError: string | null = null;
+    try {
+        if (tokenAmount.trim()) parseUnits(tokenAmount, tokenDecimals(selectedToken));
+    } catch (e) {
+        tokenAmountError = e instanceof Error ? e.message : 'Invalid token amount';
+    }
+    const tokenValid = Boolean(isConnected && selectedToken?.contractAddress && tokenTo && tokenAmount && !tokenAmountError);
+
+    const loadTokens = useCallback(async () => {
+        if (!activeConnector || activeConnector.id !== 'bitshard') return;
+        setIsLoadingTokens(true);
+        setTokenLoadError(null);
+        try {
+            const provider = (await activeConnector.getProvider()) as BitShardProvider;
+            const payload = await provider.getTokens(chainId);
+            const erc20s = payload.tokens || [];
+            setTokens(erc20s);
+            setSelectedTokenAddress((current) => current || erc20s[0]?.contractAddress || '');
+        } catch (e) {
+            setTokenLoadError(e instanceof Error ? e.message : 'Failed to load token balances');
+        } finally {
+            setIsLoadingTokens(false);
+        }
+    }, [activeConnector, chainId]);
 
     return (
         <div className="card">
-            <h2>3. Send a transaction</h2>
+            <h2>4. Send a transaction</h2>
             <p>
                 Calls <span className="kbd">eth_sendTransaction</span> on the active chain. The popup runs the appropriate
                 signing flow and broadcasts the tx.
             </p>
             {!supported && isConnected && (
                 <p className="error">
-                    The currently selected chain isn't supported by BitShard. The popup will reject this request — switch back
+                    The currently selected chain isn't supported by BitShard. The popup will reject this request - switch back
                     to an Arbitrum chain to actually send.
                 </p>
             )}
@@ -344,6 +403,83 @@ function SendTransactionCard() {
                     {isPending ? 'Awaiting approval…' : `Send ${amount} ETH`}
                 </button>
             </div>
+            <div className="divider" />
+            <h3>Send ERC-20 token</h3>
+            <p>
+                Loads ERC-20 balances through <span className="kbd">provider.getTokens(chainId)</span>, then sends a standard
+                <span className="kbd">transfer</span> transaction through the same BitShard signing flow.
+            </p>
+            <div className="row">
+                <button
+                    className="ghost"
+                    disabled={!isConnected || !supported || isLoadingTokens}
+                    onClick={loadTokens}
+                >
+                    {isLoadingTokens ? 'Loading tokens…' : 'Load wallet tokens'}
+                </button>
+            </div>
+            {tokens.length > 0 && (
+                <>
+                    <div className="field">
+                        <label>Token</label>
+                        <select
+                            value={selectedTokenAddress}
+                            onChange={(e) => setSelectedTokenAddress(e.target.value)}
+                        >
+                            {tokens.map((token) => (
+                                <option key={token.contractAddress} value={token.contractAddress}>
+                                    {token.tokenSymbol || 'TOKEN'} · {token.balance || '0'}
+                                </option>
+                            ))}
+                        </select>
+                    </div>
+                    <div className="field">
+                        <label>Recipient</label>
+                        <input value={tokenTo} onChange={(e) => setTokenTo(e.target.value)} placeholder="0x…" />
+                    </div>
+                    <div className="field">
+                        <label>Amount ({selectedTokenSymbol})</label>
+                        <input value={tokenAmount} onChange={(e) => setTokenAmount(e.target.value)} />
+                    </div>
+                    {tokenAmountError && <p className="error">{tokenAmountError}</p>}
+                    <div className="row">
+                        <button
+                            className="primary"
+                            disabled={!tokenValid || isPending}
+                            onClick={() => {
+                                if (!selectedToken?.contractAddress) return;
+                                reset();
+                                let data: Hex;
+                                try {
+                                    data = encodeFunctionData({
+                                        abi: ERC20_TRANSFER_ABI,
+                                        functionName: 'transfer',
+                                        args: [tokenTo as Hex, parseUnits(tokenAmount || '0', tokenDecimals(selectedToken))]
+                                    });
+                                } catch (e) {
+                                    console.error(e);
+                                    return;
+                                }
+                                sendTransaction({
+                                    to: selectedToken.contractAddress,
+                                    data,
+                                    value: 0n,
+                                    account: address,
+                                    chainId
+                                });
+                            }}
+                        >
+                            {isPending ? 'Awaiting approval…' : `Send ${tokenAmount} ${selectedTokenSymbol}`}
+                        </button>
+                    </div>
+                </>
+            )}
+            {!isLoadingTokens && tokens.length === 0 && tokenLoadError === null && isConnected && (
+                <p className="muted" style={{ margin: 0, fontSize: 12 }}>
+                    Click Load wallet tokens to fetch ERC-20 balances for the selected BitShard wallet.
+                </p>
+            )}
+            {tokenLoadError && <p className="error">{tokenLoadError}</p>}
             {hash && (
                 <div className="field">
                     <label>Transaction hash</label>
@@ -357,6 +493,73 @@ function SendTransactionCard() {
                             {hash}
                         </a>
                     </span>
+                </div>
+            )}
+            {error && <p className="error">{error.message}</p>}
+        </div>
+    );
+}
+
+function SignTypedDataCard() {
+    const { isConnected } = useAccount();
+    const chainId = useChainId();
+    const supported = BITSHARD_SUPPORTED_IDS.has(chainId);
+    const { signTypedData, data, error, isPending, reset } = useSignTypedData();
+
+    const domain = {
+        name: 'BitShard Demo',
+        version: '1',
+        chainId,
+        verifyingContract: '0x000000000000000000000000000000000000dEaD' as Hex
+    };
+    const types = {
+        DemoMessage: [
+            { name: 'contents', type: 'string' },
+            { name: 'from', type: 'address' }
+        ]
+    };
+    const message = {
+        contents: 'Hello typed data from BitShard',
+        from: '0x000000000000000000000000000000000000dEaD' as Hex
+    };
+
+    return (
+        <div className="card">
+            <h2>3. Sign typed data</h2>
+            <p>
+                Calls <span className="kbd">eth_signTypedData_v4</span>. The popup hashes the EIP-712 payload and the MPC
+                parties sign the digest.
+            </p>
+            {!supported && isConnected && (
+                <p className="error">
+                    The currently selected chain isn't supported by BitShard. Switch back to an Arbitrum chain to sign.
+                </p>
+            )}
+            <div className="field">
+                <label>Typed data preview</label>
+                <span className="mono">{JSON.stringify({ domain, types, primaryType: 'DemoMessage', message }, null, 2)}</span>
+            </div>
+            <div className="row">
+                <button
+                    className="primary"
+                    disabled={!isConnected || isPending || !supported}
+                    onClick={() => {
+                        reset();
+                        signTypedData({
+                            domain,
+                            types,
+                            primaryType: 'DemoMessage',
+                            message
+                        });
+                    }}
+                >
+                    {isPending ? 'Awaiting approval…' : 'Sign typed data'}
+                </button>
+            </div>
+            {data && (
+                <div className="field">
+                    <label>Signature</label>
+                    <span className="mono">{data}</span>
                 </div>
             )}
             {error && <p className="error">{error.message}</p>}
